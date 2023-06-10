@@ -1,37 +1,102 @@
-name: CMake
+version: 1.0.{build}-{branch}
 
-on:
-  push:
-    branches: [ "master" ]
-  pull_request:
-    branches: [ "master" ]
+branches:
+  except:
+    - gh-pages
 
-env:
-  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
-  BUILD_TYPE: Release
+skip_tags: true
 
-jobs:
-  build:
-    # The CMake configure and build commands are platform agnostic and should work equally well on Windows or Mac.
-    # You can convert this to a matrix build if you need cross-platform coverage.
-    # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
-    runs-on: ubuntu-latest
+skip_commits:
+  files:
+    - .drone.star
+    - .github/**
+    - android/**
+    - docs/**
+    - src/**/*_posix.*
+    - src/**/*_linux.*
+    - src/**/*_gnulinux.*
+    - src/**/*_x11.*
+    - src/**/*_gtk.*
+    - src/**/*_android.*
+    - src/**/*_mac.*
+    - LICENSE
+    - README.md
 
-    steps:
-    - uses: actions/checkout@v3
+skip_branch_with_pr: true
 
-    - name: Configure CMake
-      # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
-      # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
+pull_requests:
+  do_not_increment_build_number: true
 
-    - name: Build
-      # Build your program with the given configuration
-      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+os: Visual Studio 2019
 
-    - name: Test
-      working-directory: ${{github.workspace}}/build
-      # Execute tests defined by the CMake configuration.
-      # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
-      run: ctest -C ${{env.BUILD_TYPE}}
+init:
+  - ps: |
+      If (-Not $env:APPVEYOR_PULL_REQUEST_NUMBER) {
+        $env:is_not_pr = "true"
+      }
+      If (-Not $env:APPVEYOR_REPO_COMMIT_MESSAGE_EXTENDED) {
+        $env:APPVEYOR_REPO_COMMIT_MESSAGE_EXTENDED = " "
+      }
 
+install:
+  - |
+    vcpkg integrate remove
+    xb setup
+
+platform: Windows
+
+configuration: [Release, Checked]
+
+build_script:
+  - xb build --config=%CONFIGURATION% --target=src\xenia-app --target=tests\xenia-base-tests --target=tests\xenia-cpu-ppc-tests --target=src\xenia-vfs-dump
+
+after_build:
+  - |
+      IF NOT "%CONFIGURATION%"=="Checked" SET "ARCHIVE_SUFFIX=%APPVEYOR_REPO_BRANCH%"
+      IF NOT "%CONFIGURATION%"=="Checked" SET "ARCHIVE_SWITCHES=--"
+      IF     "%CONFIGURATION%"=="Checked" SET "ARCHIVE_SUFFIX=%APPVEYOR_REPO_BRANCH%_FOR-DEVS-ONLY"
+      IF     "%CONFIGURATION%"=="Checked" SET "ARCHIVE_SWITCHES="-pI know what I am doing." --"
+      7z a xenia_%ARCHIVE_SUFFIX%.zip          %ARCHIVE_SWITCHES% LICENSE "%APPVEYOR_BUILD_FOLDER%\build\bin\%PLATFORM%\%CONFIGURATION%\xenia.exe"          "%APPVEYOR_BUILD_FOLDER%\build\bin\%PLATFORM%\%CONFIGURATION%\xenia.pdb"
+      7z a xenia-vfs-dump_%ARCHIVE_SUFFIX%.zip %ARCHIVE_SWITCHES% LICENSE "%APPVEYOR_BUILD_FOLDER%\build\bin\%PLATFORM%\%CONFIGURATION%\xenia-vfs-dump.exe" "%APPVEYOR_BUILD_FOLDER%\build\bin\%PLATFORM%\%CONFIGURATION%\xenia-vfs-dump.pdb"
+
+before_test:
+  - xb gentests
+
+test_script:
+  - xb test --config=%CONFIGURATION% --no_build
+
+artifacts:
+  - path: '*.zip'
+  - path: xenia-cpu-ppc-test.log
+
+deploy:
+  - provider: Environment
+    name: xenia-master
+    release: xenia-$(appveyor_repo_branch)-v$(appveyor_build_version)
+    artifact: '*.zip'
+    draft: false
+    prerelease: true
+    on:
+      branch: master
+      configuration: release
+      appveyor_repo_tag: true
+      is_not_pr: true
+  - provider: GitHub
+    name: xenia-master
+    repository: xenia-project/release-builds-windows
+    auth_token:
+      secure: /8he47z1WnPN7LcCTe5T5KMxxX0SmqFj9QMpeWEa3aZ64kMsfupOT/jKakqTM8af
+    tag: v$(appveyor_build_version)
+    release: v$(appveyor_build_version)
+    description: |
+      Windows release build for https://github.com/xenia-project/xenia/commit/$(APPVEYOR_REPO_COMMIT).
+      
+      $(APPVEYOR_REPO_COMMIT_MESSAGE)
+      
+      $(APPVEYOR_REPO_COMMIT_MESSAGE_EXTENDED)
+    draft: false
+    prerelease: false
+    on:
+      branch: master
+      configuration: release
+      is_not_pr: true
